@@ -29,6 +29,7 @@ Configuration file:
   log_file = Path to the log file (used for CGI/daemon mode). Optional.
   pid_file = Path to the pid file (user for daemon mode). Optional.
   port = TCP port to listen on (used for daemon mode). Default: 3898
+  allow_ip = IPs allowed, whitespace-separated (daemon/CGI). Default: 0.0.0.0/0
 
   [REPO1]
   vcs = git
@@ -57,12 +58,15 @@ import struct
 import shutil
 import time
 import socket
+import logging
 from optparse import OptionParser
 from subprocess import Popen, PIPE
+
 
 #------------------------------------------------------------------------------
 # Entry point
 #------------------------------------------------------------------------------
+
 def main():
     p = OptionParser(__doc__.strip())
     options, args = p.parse_args()
@@ -72,6 +76,8 @@ def main():
 
     mode = args.pop(0)
     config_file = args.pop(0)
+
+    init_logging(mode)
 
     if mode == 'cgi':
         if args:
@@ -97,12 +103,24 @@ def run_update(repos, config):
         c = config[name]
         VCSS[c.vcs][0](c)
 
+def init_logging(tag=""):
+    logging.basicConfig(level=logging.DEBUG)
+
+    logger = logging.getLogger()
+    fmt = logging.Formatter('%(asctime)s '+tag+'(%(process)d) %(levelname)s %(message)s')
+    logger.handlers[0].setFormatter(fmt)
+
 #------------------------------------------------------------------------------
 # CGI mode
 #------------------------------------------------------------------------------
 
 def run_cgi(config):
     env = os.environ
+    cfg = config['global']
+
+    if not match_ip(env.get('REMOTE_ADDR', '0.0.0.0'), cfg.allow_ip):
+        print "Content-type: text/plain\n\nDENY"
+        return
 
     path = env.get('PATH_INFO', '').strip().strip('/').strip()
 
@@ -136,34 +154,41 @@ def run_daemon(config):
     s.listen(1)
 
     if daemonize(cfg.log_file) == 'parent':
-        print "Daemon spawned"
+        logging.info("Daemon spawned")
         return
+
+    init_logging("daemon")
 
     if cfg.pid_file:
         f = open(cfg.pid_file, 'w')
-        f.write("%d" % os.getpid)
+        f.write("%d" % os.getpid())
         f.close()
 
-    print "!! Pid %d listening on %s:%s" % (os.getpid(), listen_addr[0],
-                                            listen_addr[1])
+    logging.info("Listening on %s:%d" % listen_addr)
 
     while True:
         conn, addr = s.accept()
-        print "!! Connect from ", addr
+        logging.info("Connect from %s:%d" % addr)
+
+        if not match_ip(addr[0], cfg.allow_ip):
+            logging.warn("Not allowed from %s:%d" % addr)
+            conn.close()
+            continue
+        
         data = conn.recv(1024)
         conn.close()
 
         r = data.strip().split()
         if len(r) != 2:
-            print "!! Bad input from", addr
+            logging.warn("Bad input from %s:%d" % addr)
             continue
         
         repo_name, secret = r
         if secret != cfg.secret_key:
-            print "!! Bad secret from", addr
+            logging.warn("Bad secret from %s:%d" % addr)
             continue
         if not config.is_repo(repo_name):
-            print "!! Bad repo from", addr
+            logging.warn("Bad repo from %s:%d" % addr)
             continue
 
         spawn_repo_update(config, repo_name)
@@ -185,6 +210,8 @@ def validate_config(config):
                 new_section.log_file = section.get('log_file', None)
                 new_section.pid_file = section.get('pid_file', None)
                 new_section.port = int(section.get('port', 3898))
+                new_section.allow_ip = section.get('allow_ip', '0.0.0.0/0')
+                new_section.allow_ip = new_section.allow_ip.split()
             else:
                 # Repository sections
                 if 'vcs' not in section:
@@ -213,14 +240,15 @@ def spawn_repo_update(config, repo_name):
     Run a repository update, spawning ssh-agent as necessary.
     """
     if daemonize(config['global'].log_file) == 'child':
-        print "!! Spawning (pid %d)" % os.getpid()
+        init_logging("spawn")
+        logging.info("Spawning update process")
         try:
             os.environ.pop('DISPLAY', None)
             cmd = ['ssh-agent', sys.argv[0], 'update', config._filename,
                    repo_name]
             exec_command(cmd, quiet=False)
         finally:
-            print "!! Done (pid %d)" % os.getpid()
+            logging.info("Spawned process exited.")
         sys.exit(0)
 
 
@@ -263,7 +291,7 @@ def _git_update_mirror(repo):
     if repo.ssh_key:
         exec_command(['ssh-add', repo.ssh_key])
 
-    print "++ Updating repository %s ..." % local
+    logging.info("Updating repository %s ..." % local)
 
     if not os.path.isdir(os.path.join(local, '.git')):
         # Local repository missing
@@ -271,7 +299,7 @@ def _git_update_mirror(repo):
             os.makedirs(local)
 
         try:
-            print "-- Repository missing; trying to clone from remote..."
+            logging.info("Repository missing; trying to clone from remote...")
             os.chdir(local)
             exec_command(['git', 'init'])
             exec_command(['git', 'fetch', remote,
@@ -280,7 +308,7 @@ def _git_update_mirror(repo):
             exec_command(['git', 'co', '-b', 'master', 'trunk'])
             exec_command(['git', 'svn', 'rebase', '-l'])
         except ExecError:
-            print "-- Remote clone failed; going to get everything via SVN..."
+            logging.info("-- Clone failed; going to get everything via SVN...")
             if os.path.isdir(local):
                 shutil.rmtree(path)
             os.makedirs(local)
@@ -289,20 +317,20 @@ def _git_update_mirror(repo):
             exec_command(['git', 'svn', 'init'] + repo.git_svn_init)
             exec_command(['git', 'svn', 'fetch'] + repo.git_svn_fetch)
 
-    print "-- Rebasing..."
+    logging.info("Rebasing...")
     os.chdir(local)
 
     output = exec_command(['git', 'svn', 'rebase'])
     if 'is up to date' in output or 'up-to-date' in output:
         # nothing to do
-        print "-- Done, already up-to-date"
+        logging.info("Update done, was already up-to-date")
         return
 
-    print "-- Pushing..."
+    logging.info("Pushing to %s..." % remote)
     exec_command(['git', 'push', remote, '--all'])
     exec_command(['git', 'push', remote, '+refs/remotes/*:refs/remotes/*'])
 
-    print "-- Done"
+    logging.info("Update done")
 
 
 #------------------------------------------------------------------------------
@@ -465,17 +493,17 @@ def exec_command(cmd, ok_return_value=0, quiet=False):
     """
     try:
         if not quiet:
-            print "$ %s" % " ".join(cmd)
+            logging.debug("$ %s" % " ".join(cmd))
         p = Popen(cmd, stdout=PIPE, stderr=PIPE, stdin=PIPE)
         out, err = p.communicate()
         if not quiet:
             if out:
-                print out
+                logging.debug(out.strip())
             if err:
-                print err
+                logging.debug(err.strip())
     except OSError, e:
         raise RuntimeError("Command %s failed: %s" % (' '.join(cmd), e))
-        
+
     if ok_return_value is not None and p.returncode != ok_return_value:
         raise ExecError("Command %s failed (code %d): %s"
                         % (' '.join(cmd), p.returncode, out + err))
