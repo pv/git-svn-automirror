@@ -193,12 +193,21 @@ def write_pid(config):
         f.write("%d" % os.getpid())
         f.close()
         
-        signal.signal(signal.SIGTERM, unlink_pid)
-        signal.signal(signal.SIGINT,  unlink_pid)
-        signal.signal(signal.SIGQUIT, unlink_pid)
-        signal.signal(signal.SIGSEGV, unlink_pid)
+        signal.signal(signal.SIGTERM, sigint_handler)
+        signal.signal(signal.SIGINT,  sigint_handler)
+        signal.signal(signal.SIGQUIT, sigint_handler)
+        signal.signal(signal.SIGSEGV, sigint_handler)
+        signal.signal(signal.SIGHUP, sighup_handler)
 
-def unlink_pid():
+def sighup_handler(sig, stack):
+    # Restart the process
+    global PID_FILE
+    if os.path.isfile(PID_FILE):
+        os.unlink(PID_FILE)
+    os.execvp(sys.argv[0], sys.argv)
+    sys.exit(1)
+
+def sigint_handler(sig, stack):
     global PID_FILE
     if os.path.isfile(PID_FILE):
         os.unlink(PID_FILE)
