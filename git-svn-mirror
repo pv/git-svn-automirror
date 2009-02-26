@@ -4,6 +4,12 @@
 
 Update remote Git-SVN mirrors that can require SSH keys to push.
 
+Rationale:
+
+  You want to keep a git-svn mirror up-to-date, using a post-commit hook
+  in SVN. But maybe you want to host your mirrors elsewhere, or do post-commit
+  processing on a different machine.
+
 Modes:
 
   cgi CONFFILE
@@ -19,8 +25,14 @@ Modes:
       Writing 'REPO SECRETKEY' (eg. with the 'telnet' command)
       to the port causes it to trigger an update.
 
+  fifo CONFFILE PIPE
+      Function as a daemon that reads from a fifo (see 'man mkfifo').
+      Writing 'REPO SECRETKEY' to the fifo triggers an update.
+
   update CONFFILE REPO
-      Update the given repository.
+      Update the given repository (without forking to background).
+
+      NOTE: you may need to run this with ssh-agent
 
 Configuration file:
 
@@ -59,6 +71,7 @@ import shutil
 import time
 import socket
 import logging
+import signal
 from optparse import OptionParser
 from subprocess import Popen, PIPE
 
@@ -69,6 +82,8 @@ from subprocess import Popen, PIPE
 
 def main():
     p = OptionParser(__doc__.strip())
+    p.add_option("-l", "--log-level", action="store", default="debug",
+                help="Log level to use (debug, info, warning, error, critical)")
     options, args = p.parse_args()
 
     if len(args) < 2:
@@ -77,7 +92,16 @@ def main():
     mode = args.pop(0)
     config_file = args.pop(0)
 
-    init_logging(mode)
+    try:
+        log_level = dict(debug=logging.DEBUG,
+                         info=logging.INFO,
+                         warning=logging.WARNING,
+                         error=logging.ERROR,
+                         critical=logging.CRITICAL)[options.log_level.lower()]
+    except KeyError:
+        p.error("invalid log level '%s'" % options.log_level)
+
+    init_logging(mode, level=log_level)
 
     if mode == 'cgi':
         if args:
@@ -87,6 +111,10 @@ def main():
         if args:
             p.error("extraneous arguments given")
         run_daemon(validate_config(Config.load(config_file)))
+    elif mode == 'fifo':
+        if len(args) != 1:
+            p.error("fifo name not given")
+        run_fifo(args[0], validate_config(Config.load(config_file)))
     elif mode == 'update':
         if not args:
             p.error("no repository to update given")
@@ -103,8 +131,8 @@ def run_update(repos, config):
         c = config[name]
         VCSS[c.vcs][0](c)
 
-def init_logging(tag=""):
-    logging.basicConfig(level=logging.DEBUG)
+def init_logging(tag="", level=logging.DEBUG):
+    logging.basicConfig(level=level)
 
     logger = logging.getLogger()
     fmt = logging.Formatter('%(asctime)s '+tag+'(%(process)d) %(levelname)s %(message)s')
@@ -142,6 +170,40 @@ def run_cgi(config):
     print "Content-type: text/plain\n\nOK"
 
 #------------------------------------------------------------------------------
+# PID file handling
+#------------------------------------------------------------------------------
+
+PID_FILE = None
+
+def check_pid(config):
+    fn = config['global'].pid_file
+    if os.path.isfile(fn):
+        try:
+            pid = int(open(fn, 'r').read())
+            if os.path.isdir('/proc/%d' % pid):
+                raise RuntimeError("process is already running and pid file '%s' already exists" % fn)
+        except ValueError:
+            pass
+
+def write_pid(config):
+    global PID_FILE
+    PID_FILE = config['global'].pid_file
+    if PID_FILE:
+        f = open(PID_FILE, 'w')
+        f.write("%d" % os.getpid())
+        f.close()
+        
+        signal.signal(signal.SIGTERM, unlink_pid)
+        signal.signal(signal.SIGINT,  unlink_pid)
+        signal.signal(signal.SIGQUIT, unlink_pid)
+        signal.signal(signal.SIGSEGV, unlink_pid)
+
+def unlink_pid():
+    global PID_FILE
+    if os.path.isfile(PID_FILE):
+        os.unlink(PID_FILE)
+
+#------------------------------------------------------------------------------
 # Daemon mode
 #------------------------------------------------------------------------------
 
@@ -153,16 +215,15 @@ def run_daemon(config):
     s.bind(listen_addr)
     s.listen(1)
 
+    check_pid(config)
+
     if daemonize(cfg.log_file) == 'parent':
-        logging.info("Daemon spawned")
+        logging.debug("Daemon spawned")
         return
 
-    init_logging("daemon")
+    write_pid(config)
 
-    if cfg.pid_file:
-        f = open(cfg.pid_file, 'w')
-        f.write("%d" % os.getpid())
-        f.close()
+    init_logging("daemon")
 
     logging.info("Listening on %s:%d" % listen_addr)
 
@@ -189,6 +250,50 @@ def run_daemon(config):
             continue
         if not config.is_repo(repo_name):
             logging.warn("Bad repo from %s:%d" % addr)
+            continue
+
+        spawn_repo_update(config, repo_name)
+
+
+#------------------------------------------------------------------------------
+# Pipe daemon mode
+#------------------------------------------------------------------------------
+
+def run_fifo(pipe, config):
+    cfg = config['global']
+
+    check_pid(config)
+
+    if daemonize(cfg.log_file) == 'parent':
+        logging.debug("Daemon spawned")
+        return
+
+    write_pid(config)
+
+    init_logging('fifo')
+
+    logging.info("Reading fifo %s" % pipe)
+
+    while True:
+        f = open(pipe, 'r', 0)
+        data = f.read(1024)
+        while f.read(1024):
+            pass
+        f.close()
+
+        r = data.strip().split()
+        if not r:
+            continue
+        if len(r) != 2:
+            logging.debug("Bad input")
+            continue
+
+        repo_name, secret = r
+        if secret != cfg.secret_key:
+            logging.warn("Bad secret")
+            continue
+        if not config.is_repo(repo_name):
+            logging.warn("Bad repo")
             continue
 
         spawn_repo_update(config, repo_name)
@@ -241,15 +346,15 @@ def spawn_repo_update(config, repo_name):
     """
     if daemonize(config['global'].log_file) == 'child':
         init_logging("spawn")
-        logging.info("Spawning update process")
-        try:
-            os.environ.pop('DISPLAY', None)
-            cmd = ['ssh-agent', sys.argv[0], 'update', config._filename,
-                   repo_name]
-            exec_command(cmd, quiet=False)
-        finally:
-            logging.info("Spawned process exited.")
-        sys.exit(0)
+        logging.debug("Execing update process")
+        level = logging.getLevelName(logging.getLogger().level)
+
+        os.environ.pop('DISPLAY', None)
+        cmd = ['ssh-agent', sys.argv[0], '-l', level,
+               'update', config._filename, repo_name]
+        os.execvp(cmd[0], cmd)
+        logging.debug("Spawned process exited.")
+        sys.exit(1)
 
 
 #------------------------------------------------------------------------------
@@ -308,7 +413,7 @@ def _git_update_mirror(repo):
             exec_command(['git', 'co', '-b', 'master', 'trunk'])
             exec_command(['git', 'svn', 'rebase', '-l'])
         except ExecError:
-            logging.info("-- Clone failed; going to get everything via SVN...")
+            logging.info("Clone failed; going to get everything via SVN...")
             if os.path.isdir(local):
                 shutil.rmtree(path)
             os.makedirs(local)
@@ -317,7 +422,7 @@ def _git_update_mirror(repo):
             exec_command(['git', 'svn', 'init'] + repo.git_svn_init)
             exec_command(['git', 'svn', 'fetch'] + repo.git_svn_fetch)
 
-    logging.info("Rebasing...")
+    logging.debug("Rebasing...")
     os.chdir(local)
 
     output = exec_command(['git', 'svn', 'rebase'])
