@@ -417,7 +417,7 @@ def _git_update_mirror(repo):
             os.chdir(local)
             exec_command(['git', 'init'])
             exec_command(['git', 'fetch', remote,
-                          '+refs/remotes/*:refs/remotes/*'])
+                          '+refs/heads/*:refs/remotes/*'])
             exec_command(['git', 'svn', 'init'] + repo.git_svn_init)
             exec_command(['git', 'co', '-b', 'master', 'trunk'])
             exec_command(['git', 'svn', 'rebase', '-l'])
@@ -441,8 +441,8 @@ def _git_update_mirror(repo):
         return
 
     logging.info("Pushing to %s..." % remote)
-    exec_command(['git', 'push', remote, '--all'])
-    exec_command(['git', 'push', remote, '+refs/remotes/*:refs/remotes/*'])
+    exec_command(['git', 'push', remote, 
+                  '+refs/remotes/*:refs/heads/*', '+master'])
 
     logging.info("Update done")
 
