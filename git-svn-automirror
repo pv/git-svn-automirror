@@ -326,6 +326,7 @@ def validate_config(config):
                 new_section.port = int(section.get('port', 3898))
                 new_section.allow_ip = section.get('allow_ip', '0.0.0.0/0')
                 new_section.allow_ip = new_section.allow_ip.split()
+                new_section.path = section.get('path', None)
             else:
                 # Repository sections
                 if 'vcs' not in section:
@@ -357,6 +358,10 @@ def spawn_repo_update(config, repo_name):
         init_logging("spawn")
         logging.debug("Execing update process")
         level = logging.getLevelName(logging.getLogger().level)
+
+        if config['global'].path:
+            os.environ['PATH'] = os.path.pathsep.join([
+                os.environ.get('PATH', ''), config['global'].path])
 
         os.environ.pop('DISPLAY', None)
         cmd = ['ssh-agent', sys.argv[0], '-l', level,
@@ -419,7 +424,7 @@ def _git_update_mirror(repo):
             exec_command(['git', 'fetch', remote,
                           '+refs/heads/*:refs/remotes/*'])
             exec_command(['git', 'svn', 'init'] + repo.git_svn_init)
-            exec_command(['git', 'co', '-b', 'master', 'trunk'])
+            exec_command(['git', 'checkout', '-b', 'master', 'trunk'])
             exec_command(['git', 'svn', 'rebase', '-l'])
         except ExecError:
             logging.info("Clone failed; going to get everything via SVN...")
@@ -431,14 +436,16 @@ def _git_update_mirror(repo):
             exec_command(['git', 'svn', 'init'] + repo.git_svn_init)
             exec_command(['git', 'svn', 'fetch'] + repo.git_svn_fetch)
 
-    logging.debug("Rebasing...")
+    logging.debug("Fetching...")
     os.chdir(local)
 
-    output = exec_command(['git', 'svn', 'rebase'])
+    output = exec_command(['git', 'svn', 'fetch'])
     if 'is up to date' in output or 'up-to-date' in output:
         # nothing to do
         logging.info("Update done, was already up-to-date")
         return
+
+    exec_command(['git', 'svn', 'rebase', '-l'])
 
     logging.info("Pushing to %s..." % remote)
     exec_command(['git', 'push', remote, 
