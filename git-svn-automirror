@@ -385,6 +385,8 @@ def git_validate_config(config):
     new.ssh_key = config.get('ssh_key', None)
     new.git_svn_init = config.get('git_svn_init', '').split()
     new.git_svn_fetch = config.get('git_svn_fetch', '').split()
+    new.real_tags = (config.get('real_tags', 'no').lower() 
+                     in ('yes', '1', 'true'))
     return new
 
 def git_update_mirror(repo):
@@ -448,9 +450,19 @@ def _git_update_mirror(repo):
     exec_command(['git', 'svn', 'rebase', '-l'])
 
     logging.info("Pushing to %s..." % remote)
-    exec_command(['git', 'push', remote, 
-                  '+refs/remotes/*:refs/heads/*', '+master'])
 
+    if repo.real_tags:
+        exec_command(['git', 'push', remote, 
+                      '+refs/remotes/tags/*:refs/tags/*',
+                      '+refs/remotes/*:refs/heads/*',
+                      '+master',
+                      ])
+    else:
+        exec_command(['git', 'push', remote, 
+                      '+refs/remotes/*:refs/heads/*',
+                      '+master',
+                      ])
+ 
     logging.info("Update done")
 
 
