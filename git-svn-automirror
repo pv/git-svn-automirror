@@ -85,7 +85,7 @@ from subprocess import Popen, PIPE
 
 def main():
     p = OptionParser(__doc__.strip())
-    p.add_option("-l", "--log-level", action="store", default="debug",
+    p.add_option("-l", "--log-level", action="store", default="info",
                 help="Log level to use (debug, info, warning, error, critical)")
     options, args = p.parse_args()
 
