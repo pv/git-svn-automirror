@@ -34,11 +34,14 @@ Modes:
 
       NOTE: you may need to run this with ssh-agent
 
+  update-bg CONFFILE REPO
+      Update the given repository (forking to background).
+
 Configuration file:
 
   [global]
   secret_key = A secret key for the CGI/daemon modes.
-  log_file = Path to the log file (used for CGI/daemon mode). Optional.
+  log_file = Path to the log file (used for CGI/daemon/bg mode). Optional.
   pid_file = Path to the pid file (user for daemon mode). Optional.
   port = TCP port to listen on (used for daemon mode). Default: 3898
   allow_ip = IPs allowed, whitespace-separated (daemon/CGI). Default: 0.0.0.0/0
@@ -115,21 +118,20 @@ def main():
         if len(args) != 1:
             p.error("fifo name not given")
         run_fifo(args[0], validate_config(Config.load(config_file)))
-    elif mode == 'update':
+    elif mode == 'update' or mode == 'update-bg':
         if not args:
             p.error("no repository to update given")
         config = validate_config(Config.load(config_file))
         for name in args:
             if not config.is_repo(name):
                 p.error("unknown repository '%s'" % name)
-        run_update(args, config)
+        if mode == 'update':
+            run_update(args, config)
+        else:
+            logging.debug("Updating in the background")
+            spawn_repo_update(config, args)
     else:
         p.error("unknown mode '%s'" % mode)
-
-def run_update(repos, config):
-    for name in repos:
-        c = config[name]
-        VCSS[c.vcs][0](c)
 
 def init_logging(tag="", level=logging.DEBUG):
     logging.basicConfig(level=level)
@@ -137,6 +139,16 @@ def init_logging(tag="", level=logging.DEBUG):
     logger = logging.getLogger()
     fmt = logging.Formatter('%(asctime)s '+tag+'(%(process)d) %(levelname)s %(message)s')
     logger.handlers[0].setFormatter(fmt)
+
+
+#------------------------------------------------------------------------------
+# Foreground mode
+#------------------------------------------------------------------------------
+
+def run_update(repos, config):
+    for name in repos:
+        c = config[name]
+        VCSS[c.vcs][0](c)
 
 #------------------------------------------------------------------------------
 # CGI mode
@@ -307,7 +319,6 @@ def run_fifo(pipe, config):
 
         spawn_repo_update(config, repo_name)
 
-
 #------------------------------------------------------------------------------
 # General
 #------------------------------------------------------------------------------
@@ -350,10 +361,14 @@ def validate_config(config):
             raise ConfigError(err.args[0] + " in section '%s'" % name)
     return config
 
-def spawn_repo_update(config, repo_name):
+def spawn_repo_update(config, repo_names):
     """
     Run a repository update, spawning ssh-agent as necessary.
     """
+
+    if isinstance(repo_names, str):
+        repo_names = [repo_names]
+
     if daemonize(config['global'].log_file) == 'child':
         init_logging("spawn")
         logging.debug("Execing update process")
@@ -365,7 +380,7 @@ def spawn_repo_update(config, repo_name):
 
         os.environ.pop('DISPLAY', None)
         cmd = ['ssh-agent', sys.argv[0], '-l', level,
-               'update', config._filename, repo_name]
+               'update', config._filename] + repo_names
         os.execvp(cmd[0], cmd)
         logging.debug("Spawned process exited.")
         sys.exit(1)
