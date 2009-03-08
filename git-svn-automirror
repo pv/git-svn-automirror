@@ -231,7 +231,7 @@ def sigint_handler(sig, stack):
 def run_daemon(config):
     cfg = config['global']
 
-    listen_addr = ('', cfg.port)
+    listen_addr = cfg.listen
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(listen_addr)
     s.listen(1)
@@ -334,10 +334,15 @@ def validate_config(config):
                 new_section.secret_key = section.secret_key
                 new_section.log_file = section.get('log_file', None)
                 new_section.pid_file = section.get('pid_file', None)
-                new_section.port = int(section.get('port', 3898))
                 new_section.allow_ip = section.get('allow_ip', '0.0.0.0/0')
                 new_section.allow_ip = new_section.allow_ip.split()
                 new_section.path = section.get('path', None)
+                listen = section.get('listen', ':3898')
+                try:
+                    address, port = listen.split(':')
+                    new_section.listen = address, int(port)
+                except ValueError:
+                    raise ConfigError("invalid 'listen' field")
             else:
                 # Repository sections
                 if 'vcs' not in section:
