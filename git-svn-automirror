@@ -417,6 +417,8 @@ def git_validate_config(config):
     new.git_svn_fetch = config.get('git_svn_fetch', '').split()
     new.real_tags = (config.get('real_tags', 'no').lower() 
                      in ('yes', '1', 'true'))
+    new.update_server_info = (config.get('update_server_info', 'no').lower() 
+                     in ('yes', '1', 'true'))
     return new
 
 def git_update_mirror(repo):
@@ -492,6 +494,10 @@ def _git_update_mirror(repo):
                       '+refs/remotes/*:refs/heads/*',
                       '+master',
                       ])
+
+    if repo.update_server_info:
+        os.chdir(remote)
+        exec_command(['git-update-server-info'])
  
     logging.info("Update done")
 
