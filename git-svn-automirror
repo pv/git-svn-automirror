@@ -140,6 +140,12 @@ def init_logging(tag="", level=logging.DEBUG):
     fmt = logging.Formatter('%(asctime)s '+tag+'(%(process)d) %(levelname)s %(message)s')
     logger.handlers[0].setFormatter(fmt)
 
+def init_sigchld(catch=False):
+    """Install a proper SIGCHLD handler to avoid zombies"""
+    if catch:
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    else:
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 
 #------------------------------------------------------------------------------
 # Foreground mode
@@ -177,6 +183,7 @@ def run_cgi(config):
         print "Content-type: text/plain\n\nNOP"
         return
 
+    init_sigchld()
     spawn_repo_update(config, repo_name)
 
     print "Content-type: text/plain\n\nOK"
@@ -244,6 +251,7 @@ def run_daemon(config):
 
     write_pid(config)
 
+    init_sigchld()
     init_logging("daemon")
 
     logging.info("Listening on %s:%d" % listen_addr)
@@ -291,6 +299,7 @@ def run_fifo(pipe, config):
 
     write_pid(config)
 
+    init_sigchld()
     init_logging('fifo')
 
     logging.info("Reading fifo %s" % pipe)
@@ -375,6 +384,7 @@ def spawn_repo_update(config, repo_names):
         repo_names = [repo_names]
 
     if daemonize(config['global'].log_file) == 'child':
+        init_sigchld(True)
         init_logging("spawn")
         logging.debug("Execing update process")
         level = logging.getLevelName(logging.getLogger().level)
