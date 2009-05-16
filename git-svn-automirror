@@ -463,18 +463,21 @@ def _git_update_mirror(repo):
         except ExecError:
             logging.info("Clone failed; going to get everything via SVN...")
             if os.path.isdir(local):
-                shutil.rmtree(path)
+                shutil.rmtree(local)
             os.makedirs(local)
             os.chdir(local)
             exec_command(['git', 'init'])
             exec_command(['git', 'svn', 'init'] + repo.git_svn_init)
             exec_command(['git', 'svn', 'fetch'] + repo.git_svn_fetch)
+        first_time = True
+    else:
+        first_time = False
 
     logging.debug("Fetching...")
     os.chdir(local)
 
     output = exec_command(['git', 'svn', 'fetch'])
-    if not output.strip():
+    if not output.strip() and not first_time:
         # nothing to do
         logging.info("Update done, was already up-to-date")
         return
@@ -726,7 +729,8 @@ class LockFile(object):
 
     def release(self):
         if self.count == 1:
-            os.unlink(self.filename)
+            if os.path.islink(self.filename):
+                os.unlink(self.filename)
         elif self.count < 1:
             raise RuntimeError('Invalid lock nesting')
         self.count -= 1
