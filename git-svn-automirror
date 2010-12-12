@@ -516,7 +516,7 @@ def _git_update_mirror(repo):
         if update_server_info:
             os.chdir(remote)
             try:
-                exec_command(['git-update-server-info'])
+                exec_command(['git', 'update-server-info'])
             finally:
                 os.chdir(local)
 
