@@ -59,7 +59,7 @@ Configuration file:
 
 """
 #------------------------------------------------------------------------------
-# 
+#
 # Author: Pauli Virtanen <pav@iki.fi>
 #
 # This script is in the Public Domain. No guarantees.
@@ -211,7 +211,7 @@ def write_pid(config):
         f = open(PID_FILE, 'w')
         f.write("%d" % os.getpid())
         f.close()
-        
+
         signal.signal(signal.SIGTERM, sigint_handler)
         signal.signal(signal.SIGINT,  sigint_handler)
         signal.signal(signal.SIGQUIT, sigint_handler)
@@ -264,7 +264,7 @@ def run_daemon(config):
             logging.warn("Not allowed from %s:%d" % addr)
             conn.close()
             continue
-        
+
         data = conn.recv(1024)
         conn.close()
 
@@ -272,7 +272,7 @@ def run_daemon(config):
         if len(r) != 2:
             logging.warn("Bad input from %s:%d" % addr)
             continue
-        
+
         repo_name, secret = r
         if secret != cfg.secret_key:
             logging.warn("Bad secret from %s:%d" % addr)
@@ -408,17 +408,29 @@ def spawn_repo_update(config, repo_names):
 def git_validate_config(config):
     new = Config()
     try:
-        for key in ('local', 'remote', 'git_svn_init'):
+        for key in ('local', 'git_svn_init'):
             new[key] = config[key]
     except KeyError, err:
         raise ConfigError("No value for key '%s'" % (err.args[0],))
     new.ssh_key = config.get('ssh_key', None)
     new.git_svn_init = config.get('git_svn_init', '').split()
     new.git_svn_fetch = config.get('git_svn_fetch', '').split()
-    new.real_tags = (config.get('real_tags', 'no').lower() 
-                     in ('yes', '1', 'true'))
-    new.update_server_info = (config.get('update_server_info', 'no').lower() 
-                     in ('yes', '1', 'true'))
+
+    # Parse remote section
+
+    if 'remote' not in config:
+        raise ConfigError("No value for key 'remote'")
+
+    new.remote = config['remote'].split()
+    new.real_tags = [False]*len(new.remote)
+    new.update_server_info = [False]*len(new.remote)
+
+    for i, x in enumerate(config.get('real_tags', '').split()):
+        new.real_tags[i] = (x.lower() in ('yes', '1', 'true'))
+
+    for i, x in enumerate(config.get('update_server_info', '').split()):
+        new.update_server_info[i] = (x.lower() in ('yes', '1', 'true'))
+
     return new
 
 def git_update_mirror(repo):
@@ -438,7 +450,7 @@ def git_update_mirror(repo):
 
 def _git_update_mirror(repo):
     local = repo.local
-    remote = repo.remote
+    first_remote = repo.remote[0]
 
     # Inject ssh key
     if repo.ssh_key:
@@ -455,7 +467,7 @@ def _git_update_mirror(repo):
             logging.info("Repository missing; trying to clone from remote...")
             os.chdir(local)
             exec_command(['git', 'init'])
-            exec_command(['git', 'fetch', remote,
+            exec_command(['git', 'fetch', first_remote,
                           '+refs/heads/*:refs/remotes/*'])
             exec_command(['git', 'svn', 'init'] + repo.git_svn_init)
             exec_command(['git', 'checkout', '-b', 'master', 'trunk'])
@@ -484,24 +496,30 @@ def _git_update_mirror(repo):
 
     exec_command(['git', 'svn', 'rebase', '-l'])
 
-    logging.info("Pushing to %s..." % remote)
+    for remote, real_tags, update_server_info in zip(repo.remote,
+                                                     repo.real_tags,
+                                                     repo.update_server_info):
+        logging.info("Pushing to %s..." % remote)
 
-    if repo.real_tags:
-        exec_command(['git', 'push', remote, 
-                      '+refs/remotes/tags/*:refs/tags/*',
-                      '+refs/remotes/*:refs/heads/*',
-                      '+master',
-                      ])
-    else:
-        exec_command(['git', 'push', remote, 
-                      '+refs/remotes/*:refs/heads/*',
-                      '+master',
-                      ])
+        if real_tags:
+            exec_command(['git', 'push', remote,
+                          '+refs/remotes/tags/*:refs/tags/*',
+                          '+refs/remotes/*:refs/heads/*',
+                          '+master',
+                          ])
+        else:
+            exec_command(['git', 'push', remote,
+                          '+refs/remotes/*:refs/heads/*',
+                          '+master',
+                          ])
 
-    if repo.update_server_info:
-        os.chdir(remote)
-        exec_command(['git-update-server-info'])
- 
+        if update_server_info:
+            os.chdir(remote)
+            try:
+                exec_command(['git-update-server-info'])
+            finally:
+                os.chdir(local)
+
     logging.info("Update done")
 
 
@@ -699,7 +717,7 @@ class LockFile(object):
         if self.count > 0:
             self.count += 1
             return True
-        
+
         while True:
             try:
                 lock_pid = os.readlink(self.filename)
